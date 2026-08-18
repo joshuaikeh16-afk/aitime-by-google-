@@ -1,0 +1,6 @@
+{
+  "name": "VTU Hub - Airtime, Data & Bills",
+  "description": "Fast and secure VTU platform for instant Airtime, Data bundles, Electricity token vending, Cable TV subscriptions, and D3.js monthly spending analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
