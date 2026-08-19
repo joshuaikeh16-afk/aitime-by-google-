@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { UserProfile } from '../types';
+import { initiateTopUp } from '../lib/backend';
 import { 
   Building2, 
   CreditCard, 
@@ -27,9 +28,10 @@ export const FundWalletModal: React.FC<FundWalletModalProps> = ({
   user,
   onFundSuccess,
 }) => {
-  const [activeGateway, setActiveGateway] = useState<'bank' | 'card' | 'ussd'>('bank');
+  const [activeGateway, setActiveGateway] = useState<'bank' | 'card' | 'ussd'>('card');
   const [cardAmount, setCardAmount] = useState<string>('5000');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [cardError, setCardError] = useState<string | null>(null);
   const [copiedAccount, setCopiedAccount] = useState<string | null>(null);
   const [ussdBank, setUssdBank] = useState('GTBank (*737#)');
 
@@ -41,17 +43,33 @@ export const FundWalletModal: React.FC<FundWalletModalProps> = ({
     setTimeout(() => setCopiedAccount(null), 2500);
   };
 
-  const handleSimulateCardPayment = (e: React.FormEvent) => {
+  // Real Paystack payment -- opens the actual Paystack popup, verifies
+  // server-side once closed. Bank transfer / USSD tabs below are NOT
+  // wired to anything real yet (they'd need a separate dedicated
+  // virtual account provider / bank USSD integration -- out of scope
+  // for the Saturday demo, card payment via Paystack is the one real
+  // funding path right now).
+  const handleCardPayment = (e: React.FormEvent) => {
     e.preventDefault();
     const num = parseFloat(cardAmount);
     if (!num || num < 100) return;
 
+    setCardError(null);
     setIsProcessing(true);
-    setTimeout(() => {
-      setIsProcessing(false);
-      onFundSuccess(num, 'Paystack Online Card');
-      onClose();
-    }, 1200);
+
+    initiateTopUp(
+      user.email,
+      num,
+      (creditedAmount) => {
+        setIsProcessing(false);
+        onFundSuccess(creditedAmount, 'Paystack Online Card');
+        onClose();
+      },
+      (message) => {
+        setIsProcessing(false);
+        setCardError(message);
+      }
+    );
   };
 
   const handleSimulateBankTransferReceived = (account: string, bank: string) => {
@@ -62,6 +80,7 @@ export const FundWalletModal: React.FC<FundWalletModalProps> = ({
       onClose();
     }, 1000);
   };
+
 
   return (
     <div id="fund-wallet-modal" className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-0 sm:p-4">
@@ -192,7 +211,12 @@ export const FundWalletModal: React.FC<FundWalletModalProps> = ({
           )}
 
           {activeGateway === 'card' && (
-            <form onSubmit={handleSimulateCardPayment} className="space-y-4">
+            <form onSubmit={handleCardPayment} className="space-y-4">
+              {cardError && (
+                <p className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded-xl px-3 py-2">
+                  {cardError}
+                </p>
+              )}
               <div className="bg-[#0b242c] border border-slate-800 rounded-2xl p-4 space-y-3">
                 <div>
                   <label className="block text-xs font-medium text-slate-300 mb-1.5">

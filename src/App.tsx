@@ -1,6 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { BonanzaDeal, ServiceType, TabType, Transaction, UserProfile } from './types';
-import { INITIAL_TRANSACTIONS, INITIAL_USER } from './data/mockData';
 import { ThemeProvider } from './context/ThemeContext';
 import { MobileFrame } from './components/MobileFrame';
 import { HomeTab } from './components/HomeTab';
@@ -11,81 +10,97 @@ import { ServiceModal } from './components/ServiceModal';
 import { FundWalletModal } from './components/FundWalletModal';
 import { ReceiptModal } from './components/ReceiptModal';
 import { FloatingChat } from './components/FloatingChat';
-import { CheckCircle2, Zap } from 'lucide-react';
+import { AuthGate } from './components/AuthGate';
+import { getWalletBalance, getTransactionHistory, signOut } from './lib/backend';
+import { CheckCircle2 } from 'lucide-react';
 
-function AppContent() {
+function AppContent({ session }: { session: any }) {
   const [currentTab, setCurrentTab] = useState<TabType>('home');
-  const [walletBalance, setWalletBalance] = useState<number>(52800);
-  const [user, setUser] = useState<UserProfile>(INITIAL_USER);
-  const [transactions, setTransactions] = useState<Transaction[]>(INITIAL_TRANSACTIONS);
+  const [walletBalance, setWalletBalance] = useState<number>(0);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [activeService, setActiveService] = useState<ServiceType | null>(null);
   const [isFundWalletOpen, setIsFundWalletOpen] = useState<boolean>(false);
   const [activeReceipt, setActiveReceipt] = useState<Transaction | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  const user: UserProfile = {
+    fullName: session.user.email?.split('@')[0] ?? 'User',
+    username: session.user.email?.split('@')[0] ?? 'user',
+    email: session.user.email ?? '',
+    phone: '',
+    tier: 'Tier 1',
+    avatarUrl: '',
+    referralCode: '',
+    totalReferrals: 0,
+    referralEarnings: 0,
+    // Virtual accounts (bank-transfer funding) aren't wired for the
+    // Saturday demo -- real card payment via Paystack is the only
+    // funding method that's actually live right now.
+    virtualAccounts: [],
+  };
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
-    setTimeout(() => {
-      setToastMessage(null);
-    }, 3500);
+    setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // Handle successful service completion
-  const handleCompleteTransaction = (newTx: Transaction) => {
-    // Deduct or add to wallet
-    if (newTx.type === 'air_to_cash') {
-      const cashReceived = Math.round(newTx.amount * 0.82);
-      setWalletBalance((prev) => prev + cashReceived);
-      showToast(`Airtime converted! ₦${cashReceived.toLocaleString()} added.`);
-    } else {
-      setWalletBalance((prev) => Math.max(0, prev - newTx.amount));
-      showToast(`Instant Delivery Successful for ${newTx.title}!`);
-    }
+  /** Re-fetches real balance + transaction history from Supabase -- call this after any successful purchase or top-up, rather than locally mutating fake state. */
+  const refreshWalletData = useCallback(async () => {
+    const [balance, history] = await Promise.all([
+      getWalletBalance(session.user.id),
+      getTransactionHistory(session.user.id),
+    ]);
+    setWalletBalance(balance);
+    setTransactions(history);
+  }, [session.user.id]);
 
-    setTransactions((prev) => [newTx, ...prev]);
+  useEffect(() => {
+    refreshWalletData().finally(() => setIsLoading(false));
+  }, [refreshWalletData]);
+
+  // Called by ServiceModal after a REAL purchase completes (success or
+  // failure already resolved server-side by the iacafe-purchase Edge
+  // Function -- this just refreshes the UI to reflect the real result).
+  const handleCompleteTransaction = async (newTx: Transaction) => {
+    await refreshWalletData();
+    showToast(`Instant Delivery Successful for ${newTx.title}!`);
     setActiveReceipt(newTx);
   };
 
-  // Handle wallet funding
-  const handleFundSuccess = (amount: number, method: string) => {
-    setWalletBalance((prev) => prev + amount);
-
-    const now = new Date();
-    const newTx: Transaction = {
-      id: `tx-${Date.now()}`,
-      ref: `DEP-${Math.floor(100000000 + Math.random() * 900000000)}`,
-      type: 'wallet_funding',
-      title: 'Automated Wallet Deposit',
-      category: 'Wallet Deposit',
-      amount,
-      recipient: user.fullName,
-      status: 'successful',
-      date: now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
-      time: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      paymentMethod: method,
-    };
-
-    setTransactions((prev) => [newTx, ...prev]);
+  // Called by FundWalletModal after a REAL Paystack payment is verified
+  // server-side. `method` param kept for prop-type compatibility with
+  // the existing modal but unused -- real payment method is already
+  // recorded server-side in wallet_transactions.
+  const handleFundSuccess = async (amount: number, _method: string) => {
+    await refreshWalletData();
     showToast(`Wallet credited with ₦${amount.toLocaleString()}!`);
-    setActiveReceipt(newTx);
   };
 
-  // Handle claiming bonanza deals from Task tab
   const handleClaimBonanzaDeal = (deal: BonanzaDeal) => {
     setActiveService('budget_data');
   };
 
-  // Handle rewards & bonuses
+  // NOTE: reward/bonanza claiming is a gamification feature that isn't
+  // wired to real money -- out of scope for the Saturday demo. Left as
+  // a local-only toast for now so the UI doesn't break, but this does
+  // NOT touch the real wallet balance.
   const handleRewardClaimed = (amount: number, msg: string) => {
-    setWalletBalance((prev) => prev + amount);
-    showToast(`🎉 ${msg} (+₦${amount.toLocaleString()})`);
+    showToast(`${msg} (not credited -- rewards feature not live yet)`);
   };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#051115]">
+        <p className="text-slate-400 text-sm">Loading your wallet...</p>
+      </div>
+    );
+  }
 
   return (
     <MobileFrame currentTab={currentTab} onTabChange={setCurrentTab}>
-      {/* Toast Notification */}
       {toastMessage && (
-        <div 
+        <div
           id="global-toast-banner"
           className="fixed top-12 left-1/2 -translate-x-1/2 z-50 bg-emerald-600 text-white px-4 py-2.5 rounded-2xl shadow-xl flex items-center gap-2 text-xs font-bold animate-in fade-in slide-in-from-top-4 duration-200 border border-emerald-400"
         >
@@ -94,7 +109,6 @@ function AppContent() {
         </div>
       )}
 
-      {/* Tab 1: Home (Matches Screenshot) */}
       {currentTab === 'home' && (
         <HomeTab
           user={user}
@@ -108,15 +122,10 @@ function AppContent() {
         />
       )}
 
-      {/* Tab 2: Task (Bonanza Deals & Rewards) */}
       {currentTab === 'task' && (
-        <TaskTab
-          onClaimDeal={handleClaimBonanzaDeal}
-          onRewardClaimed={handleRewardClaimed}
-        />
+        <TaskTab onClaimDeal={handleClaimBonanzaDeal} onRewardClaimed={handleRewardClaimed} />
       )}
 
-      {/* Tab 3: History / Transaction (Payments & Withdrawals) */}
       {currentTab === 'transaction' && (
         <TransactionTab
           transactions={transactions}
@@ -125,16 +134,10 @@ function AppContent() {
         />
       )}
 
-      {/* Tab 4: Profile (Credentials & Account Settings) */}
       {currentTab === 'profile' && (
-        <ProfileTab
-          user={user}
-          onOpenFundWallet={() => setIsFundWalletOpen(true)}
-          onRewardClaimed={handleRewardClaimed}
-        />
+        <ProfileTab user={user} onOpenFundWallet={() => setIsFundWalletOpen(true)} onRewardClaimed={handleRewardClaimed} />
       )}
 
-      {/* Modal: Service Form & Checkout */}
       {activeService && (
         <ServiceModal
           serviceId={activeService}
@@ -144,7 +147,6 @@ function AppContent() {
         />
       )}
 
-      {/* Modal: Fund Wallet Gateway */}
       <FundWalletModal
         isOpen={isFundWalletOpen}
         onClose={() => setIsFundWalletOpen(false)}
@@ -152,15 +154,8 @@ function AppContent() {
         onFundSuccess={handleFundSuccess}
       />
 
-      {/* Modal: Digital Receipt */}
-      {activeReceipt && (
-        <ReceiptModal
-          transaction={activeReceipt}
-          onClose={() => setActiveReceipt(null)}
-        />
-      )}
+      {activeReceipt && <ReceiptModal transaction={activeReceipt} onClose={() => setActiveReceipt(null)} />}
 
-      {/* Floating 24/7 Support Chat Button (From screenshot) */}
       <FloatingChat />
     </MobileFrame>
   );
@@ -169,7 +164,7 @@ function AppContent() {
 export default function App() {
   return (
     <ThemeProvider>
-      <AppContent />
+      <AuthGate>{(session) => <AppContent session={session} />}</AuthGate>
     </ThemeProvider>
   );
 }

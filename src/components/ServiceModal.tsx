@@ -7,6 +7,7 @@ import {
   BETTING_PROVIDERS, 
   EXAM_PROVIDERS 
 } from '../data/mockData';
+import { purchaseAirtime, purchaseData, fetchDataPlans } from '../lib/backend';
 import { 
   X, 
   CheckCircle2, 
@@ -62,6 +63,8 @@ export const ServiceModal: React.FC<ServiceModalProps> = ({
   const [verifiedName, setVerifiedName] = useState<string | null>(null);
   const [isVerifying, setIsVerifying] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [liveDataPlans, setLiveDataPlans] = useState<{ id: string; name: string; price: number }[] | null>(null);
+  const [isLoadingPlans, setIsLoadingPlans] = useState(false);
 
   // Auto-detect network from phone prefix
   useEffect(() => {
@@ -79,12 +82,42 @@ export const ServiceModal: React.FC<ServiceModalProps> = ({
     }
   }, [phone]);
 
+  // Real data plans (replaces DATA_PLANS mock) for airtime/data
+  // service types -- fetched live from IA-Cafe whenever the network
+  // selection changes. Falls back to the mock list if the live fetch
+  // fails or returns nothing, so the UI doesn't just break, but a real
+  // purchase attempt against a mock plan ID will fail server-side
+  // (that's intentional -- better an honest error than a silent fake
+  // success).
+  useEffect(() => {
+    if (serviceId !== 'budget_data' && serviceId !== 'std_data') return;
+
+    let cancelled = false;
+    setIsLoadingPlans(true);
+    fetchDataPlans(network).then((variations) => {
+      if (cancelled) return;
+      setIsLoadingPlans(false);
+      if (variations.length > 0) {
+        setLiveDataPlans(
+          variations.map((v) => ({ id: v.variation_code, name: v.name, price: v.price }))
+        );
+      } else {
+        setLiveDataPlans(null); // fall back to mock DATA_PLANS below
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [network, serviceId]);
+
+  const activePlans = liveDataPlans ?? DATA_PLANS[network] ?? [];
+
   // Set default plan for data
   useEffect(() => {
-    if (DATA_PLANS[network] && DATA_PLANS[network].length > 0) {
-      setSelectedPlanId(DATA_PLANS[network][1]?.id || DATA_PLANS[network][0].id);
+    if (activePlans.length > 0) {
+      setSelectedPlanId(activePlans[1]?.id || activePlans[0].id);
     }
-  }, [network]);
+  }, [network, liveDataPlans]);
 
   // Simulate customer name verification
   const handleVerifyCustomer = (target: string) => {
@@ -114,7 +147,7 @@ export const ServiceModal: React.FC<ServiceModalProps> = ({
         return Math.max(0, airtimeVal * 0.98); // 2% discount
       case 'budget_data':
       case 'std_data':
-        const plan = DATA_PLANS[network]?.find((p) => p.id === selectedPlanId);
+        const plan = activePlans?.find((p) => p.id === selectedPlanId);
         return plan ? plan.price : 265;
       case 'electricity':
         return parseFloat(amount) || 2000;
@@ -140,7 +173,7 @@ export const ServiceModal: React.FC<ServiceModalProps> = ({
 
   const finalCost = getTransactionCost();
 
-  const handleExecute = (e: React.FormEvent) => {
+  const handleExecute = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
 
@@ -151,6 +184,78 @@ export const ServiceModal: React.FC<ServiceModalProps> = ({
 
     setIsProcessing(true);
 
+    // --- REAL purchase path: airtime and data only, via the actual
+    // IA-Cafe API (server-side, real money moves against your real
+    // IA-Cafe wallet). Every other service type below this block
+    // remains a UI-only simulation -- out of scope for the Saturday
+    // demo, not wired to any real backend. ---
+    if (serviceId === 'airtime' || serviceId === 'budget_data' || serviceId === 'std_data') {
+      let result;
+
+      if (serviceId === 'airtime') {
+        result = await purchaseAirtime(network as any, phone, Number(amount));
+      } else {
+        const plan = activePlans?.find((p) => p.id === selectedPlanId);
+        if (!plan) {
+          setIsProcessing(false);
+          setErrorMsg('Select a data plan first.');
+          return;
+        }
+        // NOTE: DATA_PLANS is still mock data with made-up IDs (e.g.
+        // 'mtn-2'), not real IA-Cafe variation codes yet. This will
+        // fail against the real API until DATA_PLANS is replaced with
+        // a live fetchDataPlans() call per network -- flagged as the
+        // next thing to fix, not silently pretending this works.
+        result = await purchaseData(network as any, phone, plan.price, plan.id);
+      }
+
+      setIsProcessing(false);
+
+      if (!result.success) {
+        setErrorMsg(result.error || 'Purchase failed. Please try again.');
+        return;
+      }
+
+      const refId = `VTU-${Math.floor(100000000 + Math.random() * 900000000)}`;
+      const now = new Date();
+      const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const dateStr = now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+
+      let title = '';
+      let category = '';
+      if (serviceId === 'airtime') {
+        title = `${network} ₦${Number(amount).toLocaleString()} Instant Airtime`;
+        category = 'Airtime';
+      } else {
+        const plan = activePlans?.find((p) => p.id === selectedPlanId);
+        title = `${network} ${plan?.name || 'Data Bundle'}`;
+        category = 'Data Bundle';
+      }
+
+      const tx: Transaction = {
+        id: `tx-${Date.now()}`,
+        ref: refId,
+        type: serviceId,
+        title,
+        category,
+        amount: finalCost,
+        recipient: phone,
+        network: network as any,
+        status: 'successful',
+        date: dateStr,
+        time: timeStr,
+        paymentMethod: 'Wallet Balance',
+        cashbackEarned: serviceId === 'airtime' ? Math.round(finalCost * 0.02) : undefined,
+      };
+
+      onCompleteTransaction(tx);
+      onClose();
+      return;
+    }
+
+    // --- Everything below is the original UI-only simulation for
+    // service types not in scope for Saturday (electricity, cable,
+    // exam pins, betting, social boost, withdraw, air-to-cash). ---
     setTimeout(() => {
       setIsProcessing(false);
 
@@ -169,7 +274,7 @@ export const ServiceModal: React.FC<ServiceModalProps> = ({
         category = 'Airtime';
         recipientVal = phone;
       } else if (serviceId === 'budget_data' || serviceId === 'std_data') {
-        const plan = DATA_PLANS[network]?.find((p) => p.id === selectedPlanId);
+        const plan = activePlans?.find((p) => p.id === selectedPlanId);
         title = `${network} ${plan?.name || 'Data Bundle'}`;
         category = 'Data Bundle';
         recipientVal = phone;
@@ -373,7 +478,7 @@ export const ServiceModal: React.FC<ServiceModalProps> = ({
                 Select Data Bundle Plan
               </label>
               <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-                {DATA_PLANS[network]?.map((plan) => {
+                {activePlans?.map((plan) => {
                   const isSelected = selectedPlanId === plan.id;
                   return (
                     <div
